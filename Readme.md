@@ -14,6 +14,13 @@ cd aka-bot
 npm install
 ```
 
+### 你要用斜線指令的話
+用 `slash.py`，需要 Python。
+```bat
+cd aka-bot/src
+python slash.py
+```
+
 ## 執行
 ```bat
 cd aka-bot
