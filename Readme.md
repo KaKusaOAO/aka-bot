@@ -16,5 +16,6 @@ npm install
 
 ## 執行
 ```bat
+cd aka-bot
 npm run exec
 ```
