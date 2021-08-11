@@ -10,6 +10,7 @@
 ## 安裝
 ```bat
 git clone https://github.com/ItsArcal139/aka-bot
+cd aka-bot
 npm install
 ```
 
