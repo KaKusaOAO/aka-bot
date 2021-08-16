@@ -27,4 +27,5 @@ declare module "node-cron" {
     }
 
     export function schedule(cron: string, callback: () => void): CronTask;
+    export function schedule(cron: null, callback: () => void | null): never;
 }

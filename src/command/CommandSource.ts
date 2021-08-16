@@ -7,6 +7,9 @@ import { Akabot } from "../Akabot";
 
 export abstract class CommandSource {
     public abstract getName(): string
+    public async init(): Promise<void> {
+
+    }
 }
 
 export class ConsoleCommandSource extends CommandSource {
@@ -67,16 +70,26 @@ export class DiscordSlashSource extends DiscordSource {
     private member: GuildMember | null = null;
     private channel: TextChannel | DMChannel | NewsChannel | null = null;
 
+    private bot: Client;
+    private interaction: KInteractionWS;
+
     public constructor(bot: Client, interaction: KInteractionWS) {
         super();
+        this.bot = bot;
+        this.interaction = interaction;
+    }
 
-        Promise.all([
+    public async init() {
+        const bot = this.bot;
+        const interaction = this.interaction;
+
+        await Promise.all([
             bot.users.fetch(interaction.member.user.id).then(user => {
                 this.user = user;
             }),
-            bot.guilds.fetch(interaction.guild_id).then(guild => {
+            bot.guilds.fetch(interaction.guild_id).then(async guild => {
                 if(this.user == null) return;
-                guild.members.fetch(this.user).then(member => {
+                await guild.members.fetch(this.user).then(member => {
                     this.member = member;
                 })
             }),

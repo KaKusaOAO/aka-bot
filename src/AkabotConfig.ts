@@ -3,28 +3,9 @@ import { DataUpgrader } from "./utils/DataUpgrader";
 
 const CONFIG_FILE = "config.json";
 
-type AkabotConfigData = {
-    version: number,
-    appId: string,
-    botToken: string,
-    status: string,
-    enableTypeDelay: boolean,
-    allowSelfInvoke: boolean,
-    activeSchedule: string | null,
-    activeRole: string,
-    activeCheckMsg: string | null,
-    channels: AkabotConfigChannelData,
-    guildId: string,
-    ignoredRoles: string[],
-    kickThresholdRole: string
-    [key: string]: any
-};
+type AkabotConfigData = typeof AkabotConfig.DEFAULT;
 
-type AkabotConfigChannelData = {
-    logger: string | null,
-    announcement: string,
-    checker: string
-};
+type AkabotConfigChannelData = AkabotConfigData["channels"];
 
 export class AkabotConfigUpgrader extends DataUpgrader<AkabotConfigData> {
     public constructor() {
@@ -56,24 +37,28 @@ export class AkabotConfigUpgrader extends DataUpgrader<AkabotConfigData> {
 }
 
 export class AkabotConfig {
-    public static readonly DEFAULT: AkabotConfigData = {
+    public static readonly DEFAULT = {
         version: 1,
         appId: "<insert app ID here>",
         botToken: "<insert token here>",
         status: "Akabot on duty!",
         enableTypeDelay: true,
         allowSelfInvoke: false,
-        activeSchedule: null,
+        activeSchedule: null as string | null,
         activeRole: "<role indicates that member is being active>",
-        activeCheckMsg: null,
+        activeAnnounceMsg: null as string | null,
+        activeCheckMsg: null as string | null,
         guildId: "<empty>",
         channels: {
-            logger: null,
+            logger: null as string | null,
             announcement: "<empty>",
             checker: "empty"
         },
         kickThresholdRole: "<empty>",
-        ignoredRoles: []
+        ignoredRoles: [] as string[],
+        validChannels: [] as string[],
+        forceKickRole: "empty",
+        lockedForceKickMembers: [] as string[],
     }
 
     public data: AkabotConfigData = AkabotConfig.DEFAULT;
@@ -126,6 +111,10 @@ export class AkabotConfig {
         return this.data.activeRole;
     }
 
+    public getActiveAnnounceMsg(): string | null {
+        return this.data.activeAnnounceMsg;
+    }
+
     public getActiveCheckMsg(): string | null {
         return this.data.activeCheckMsg;
     }
@@ -142,8 +131,20 @@ export class AkabotConfig {
         return this.data.ignoredRoles;
     }
 
+    public getValidChannels(): string[] {
+        return this.data.validChannels;
+    }
+
     public getKickThresholdRole(): string {
         return this.data.kickThresholdRole;
+    }
+
+    public getForceKickRole(): string {
+        return this.data.forceKickRole;
+    }
+
+    public getLockedForceKickMembers(): string[] {
+        return this.data.lockedForceKickMembers;
     }
 
     public save() {

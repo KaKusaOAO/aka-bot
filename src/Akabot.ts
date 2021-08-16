@@ -4,7 +4,7 @@ import { CommandNode, CommandDispatcher, Command, RootCommandNode, LiteralComman
 import { CommandSource, ConsoleCommandSource, DiscordCommandSource, DiscordSlashSource, DiscordSource } from "./command/CommandSource"
 import { FormatText, LiteralText, TextColor } from "./text/Text";
 import { AkabotConfig } from "./AkabotConfig";
-import { Client, Guild, GuildChannel, GuildMember, Message, MessageEmbed, MessageReaction, PartialUser, PermissionString, TextChannel, User } from "discord.js";
+import { Client, DMChannel, Guild, GuildChannel, GuildMember, Message, MessageEmbed, MessageReaction, PartialUser, PermissionString, TextChannel, User } from "discord.js";
 import { Typer } from "./utils/Typer";
 import { Task } from "./utils/Task";
 import * as cron from "node-cron";
@@ -13,6 +13,7 @@ import { textChangeRangeIsUnchanged } from "typescript";
 import { SlashPatch } from "./utils/SlashPatch";
 import { BaseClient } from "discord.js";
 import { OverwriteResolvable } from "discord.js";
+import { OnDutyProvider, ProviderBase, TestProvider } from "./providers/providers";
 
 export class Akabot {
     public logger: Logger;
@@ -24,8 +25,8 @@ export class Akabot {
     public bot: Client;
     private static _instance: Akabot;
     private static readonly debugTest = false;
-    // private static readonly announceId = Akabot.debugTest ? "766819273669607459" : "766819273137455119";
-    // private static readonly checkId = "769009862323208224";
+
+    private provider: ProviderBase;
 
     public activeTask: cron.CronTask | null = null;
 
@@ -33,6 +34,8 @@ export class Akabot {
         Akabot._instance = this;
         this.logger = new Logger();
         this.logger.info("Akabot v1.0 is starting....");
+
+        this.provider = Akabot.debugTest ? new TestProvider(this) : new OnDutyProvider(this);
 
         // Setup readline interface.
         this.in = readline.createInterface({
@@ -151,7 +154,7 @@ export class Akabot {
     public async kaboom() {
         this.logger.info("Started kaboom()...");
         if(Akabot.debugTest) {
-            this.logger.info("-- Debug mode is activated. That means the bot will not perform any real actions. --");
+            this.logger.info("-- Debug mode is activated. That means the bot should not perform any real actions. --");
         }
 
         var g = this.bot.guilds.cache.get(this.config.getGuildId());
@@ -167,14 +170,8 @@ export class Akabot {
             if(checkerChn instanceof TextChannel) {
                 var everyone = checkerChn.guild.roles.everyone.id;
                 checkerChn.overwritePermissions(this.getCheckerPermissionOverwrite(everyone, true));
-
-                var msg = await checkerChn.messages.resolve(cm);
-                if(msg) {
-                    msg = await msg.fetch(true);
-
-                    msg.delete({
-                        reason: "開始移除潛水成員，故移除舊的潛水檢查訊息。"
-                    });
+                if(cm != "<debug>") {
+                    checkerChn.messages.delete(cm, "開始移除潛水成員，故移除舊的潛水檢查訊息。").finally(() => {});
                 }
             }
         }
@@ -187,7 +184,7 @@ export class Akabot {
             var shouldIgnore = false;
             
             if(m.user.bot || m.user.id == g?.ownerID) {
-                // Ignore moderators, bots, chuchu and the server owner.
+                // Ignore bots and server owner.
                 return;
             }
 
@@ -202,31 +199,34 @@ export class Akabot {
             }
 
             var toKick = false;
-            
-            if(m.roles.cache.map(r => r.id).indexOf(this.config.getActiveRole()) == -1) {
-                // Didn't have the active role.
 
-                // Check if this inactive member has the kick threshold role.
-                var kr = this.config.getKickThresholdRole();
+            const roles = m.roles.cache.map(r => r.id);
+            if(roles.indexOf(this.config.getForceKickRole()) != -1) {
+                toKick = true;
+            }
 
-                if(m.roles.cache.map(r => r.id).indexOf(kr) == -1) {
-                    // Kick ones without that role.
-                    toKick = true;
-                }
+            if(!toKick) {
+                if(roles.indexOf(this.config.getActiveRole()) == -1) {
+                    // Didn't have the active role.
 
-                // Check if this inactive member will be kicked.
-                if(!toKick) {
-                    // Remove the threshold role.
-                    if(Akabot.debugTest) {
-                        this.logger.debug(`This will remove the role of ${m.user?.tag} if on duty.`);
-                    } else {
-                        m.roles.remove(kr);
+                    // Check if this inactive member has the kick threshold role.
+                    var kr = this.config.getKickThresholdRole();
+
+                    if(roles.indexOf(kr) == -1) {
+                        // Kick ones without that role.
+                        toKick = true;
                     }
+
+                    // Check if this inactive member will be kicked.
+                    if(!toKick) {
+                        // Remove the threshold role.
+                        this.provider.removeRole(m, kr);
+                    }
+                    count++;
+                } else {
+                    // Remove the active role.
+                    this.provider.removeRole(m, this.config.getActiveRole());
                 }
-                count++;
-            } else {
-                // Remove the active role.
-                m.roles.remove(this.config.getActiveRole());
             }
 
             if(toKick) {
@@ -237,19 +237,22 @@ export class Akabot {
         });
 
         pendKick.forEach(async (m) => {
-            if(Akabot.debugTest) {
-                this.logger.debug(`This will kick ${m.user?.tag} if on duty.`);
-            } else {
-                var embed = new MessageEmbed();
-                embed.color = 0xff7b51;
-                embed.title = "您因為潛水已被踢除";
-                embed.description = "您因為於潛水檢查時沒有居民身分組，機器人已自動將您踢除。";
-                embed.setAuthor("咔咔島國", g?.iconURL() ?? undefined);
-                embed.addField("伺服器連結", "[連結](https://discord.gg/pWPNVqXRGy)")
-                m.send({ embed }).finally(() => {
-                    m.kick("潛水檢查時沒有居民身分組，已自動踢除。");
-                });
+            var embed = new MessageEmbed();
+            embed.color = 0xff7b51;
+            embed.title = "您因為潛水已被踢除";
+            embed.description = "您因為於潛水檢查時沒有居民身分組，機器人已自動將您踢除。";
+
+            const isForceKick = m.roles.cache.map(r => r.id).indexOf(this.config.getForceKickRole()) != -1;
+            if(isForceKick) {
+                embed.description += "\n由於您被手動標記為潛水，您已被直接踢出。";
             }
+
+            embed.setAuthor("咔咔島國", g?.iconURL() ?? undefined);
+            embed.addField("伺服器連結", "[連結](https://discord.gg/pWPNVqXRGy)");
+            
+            this.provider.sendToMember(m, { embed }).finally(() => {
+                this.provider.kickMember(m, isForceKick ? "潛水檢查時被手動標記為潛水，已自動踢除。" : "潛水檢查時沒有居民身分組，已自動踢除。");
+            });
             kicked++;
         });
 
@@ -261,13 +264,13 @@ export class Akabot {
             if(c instanceof TextChannel) {
                 var embed = new MessageEmbed();
                 embed.color = 0xff7b51;
-                embed.title = "潛水檢查完畢" + (Akabot.debugTest ? " (Debug)" : "");
+                embed.title = "潛水檢查完畢";
                 embed.description = "原先無居民身分組的成員已被踢除；\n有居民身分組的潛水成員，居民身分組已被移除。";
                 embed.setAuthor("咔咔島國", g?.iconURL() ?? undefined);
 
-                embed.addField("潛水人數", `${count}人`, true)
-                embed.addField("踢除人數", `${kicked}人`, true)
-                c.send({ embed });
+                embed.addField("潛水人數", `${count}人`, true);
+                embed.addField("踢除人數", `${kicked}人`, true);
+                this.provider.sendToChannel(c, { embed });
             }
         });
     }
@@ -365,66 +368,50 @@ export class Akabot {
                     var g = await this.bot.guilds.fetch(this.config.getGuildId());
                     var c = await g.channels.resolve(chns.announcement);
                     if(c instanceof TextChannel) {
-                        var embed = new MessageEmbed();
-                        embed.color = 0xff7b51;
-                        embed.title = "清除潛水者公告";
-                        embed.description = "沒有在 <#769009862323208224> 點選按鈕的成員，居民身分組將會被移除；\n原先即無居民身分組者會被踢除！";
-                        embed.setAuthor("咔咔島國", g.iconURL() ?? undefined);
-
-                        var mind = min.length == 1 ? "0" + min : min;
-                        embed.addField("截止日期", `${month}月${day}日 ${hr}:${mind}`);
-                        c.send({ embed });
+                        const embed = this.getAnnounceEmbed();
+                        const r = await this.provider.sendToChannel(c, {
+                            embeds: [ embed ]
+                        });
+                        this.config.data.activeAnnounceMsg = r.id;
                     }
 
                     var c2 = await g.channels.resolve(chns.checker);
                     if(c2 instanceof TextChannel) {
                         var everyone = c2.guild.roles.everyone.id;
                         c2.overwritePermissions(this.getCheckerPermissionOverwrite(everyone, false));
+                        const embed = this.getCheckerEmbed();
 
-                        var embed = new MessageEmbed();
-                        embed.color = 0xff7b51;
-                        embed.title = "潛水檢查";
-                        embed.description = "請在這條訊息下方按下按鈕，以通過潛水檢查，否則居民身分組將會被移除；\n原先即無居民身分組者會被踢除！";
-                        embed.setAuthor("咔咔島國", g.iconURL() ?? undefined);
-
-                        var mind = min.length == 1 ? "0" + min : min;
-                        embed.addField("截止日期", `${month}月${day}日 ${hr}:${mind}`);
-
-                        // @ts-ignore
-                        const api: any = this.bot.api;
-                        var msg = await api.channels(c2.id).messages.post({
-                            data: {
-                                embed, 
-    
-                                // @ts-ignore
-                                components: [
-                                    {
-                                        type: 1,
-                                        components: [
-                                            {
-                                                type: 2,
-                                                style: 2,
-                                                label: "我沒有潛水！",
-                                                emoji: {
-                                                    name: "meme_phoque",
-                                                    id: "766825219306291231",
-                                                    animated: false
-                                                },
-                                                custom_id: "divecheck_pass",
-                                            }
-                                        ]
-                                    }
-                                ]
-                            }
+                        const msg = await this.provider.sendToChannel(c2, {
+                            embeds: [ embed ], 
+                            components: [
+                                {
+                                    type: 1,
+                                    components: [
+                                        {
+                                            type: 2,
+                                            style: 2,
+                                            label: "我沒有潛水！",
+                                            emoji: {
+                                                name: "meme_phoque",
+                                                id: "766825219306291231",
+                                                animated: false
+                                            },
+                                            custom_id: "divecheck_pass",
+                                        }
+                                    ]
+                                }
+                            ]
                         });
 
+                        var mind = min.length == 1 ? "0" + min : min;
+
                         // Set the topic
-                        c2.setTopic(`${month}月${day}日 ${hr}:${mind} 截止`, "更新截止日期。");
+                        this.provider.setChannelTopic(c2, `${month}月${day}日 ${hr}:${mind} 截止`, "更新截止日期。");
 
                         // Store the checker message by Snowflake.
                         this.config.data.activeCheckMsg = msg.id;
-                        this.config.save();
                     }
+                    this.config.save();
                 });
 
                 var schedule = `${min} ${hr} ${day} ${month} *`;
@@ -451,6 +438,94 @@ export class Akabot {
                 return CommandResult.success();
             })
         ));
+        
+        d.register(Command.of<CommandSource>("update", RootCommandNode.create<CommandSource>()
+            .executes(c => {
+                if(c.source instanceof DiscordCommandSource) {
+                    if(!c.source.getMember()?.hasPermission("KICK_MEMBERS")) {
+                        return CommandResult.error(new Error("Not permitted"));
+                    }
+                }
+
+                Task.run(async () => {
+                    var g = await this.bot.guilds.fetch(this.config.getGuildId());
+                    var chns = this.config.data.channels;
+                    var c = await g.channels.resolve(chns.announcement) as TextChannel;
+                    var c2 = await g.channels.resolve(chns.checker) as TextChannel;
+                    const announceMsg = this.config.getActiveAnnounceMsg()!!;
+                    const checkerMsg = this.config.getActiveCheckMsg()!!;
+                    const aEmbed = this.getAnnounceEmbed();
+                    const cEmbed = this.getCheckerEmbed();
+
+                    this.provider.editMessageAt(c, announceMsg, {
+                        embeds: [ aEmbed ]
+                    });
+                    this.provider.editMessageAt(c2, checkerMsg, {
+                        embeds: [ cEmbed ]
+                    });
+
+                    var spl = this.config.getActiveSchedule()?.split(" ");
+                    if(!spl) spl = ["0","0","0","0"];
+            
+                    var min = spl[0];
+                    var mind = min.length == 1 ? "0" + min : min;
+                    var hr = spl[1];
+                    var day = spl[2];
+                    var month = spl[3];
+
+                    this.provider.setChannelTopic(c2, `${month}月${day}日 ${hr}:${mind} 截止`, "更新截止日期。");
+                });
+
+                return CommandResult.success();
+            })
+        ));
+    }
+
+    public getDateTimeDetails() {
+        var spl = this.config.getActiveSchedule()?.split(" ");
+        if(!spl) spl = ["0","0","0","0"];
+
+        var min = spl[0];
+        var mind = min.length == 1 ? "0" + min : min;
+        var hr = spl[1];
+        var day = spl[2];
+        var month = spl[3];
+
+        return {
+            min, minD: mind, hour: hr, day, month
+        };
+    }    
+
+    public getEmbedBase(): MessageEmbed {
+        var g = this.bot.guilds.cache.get(this.config.getGuildId());
+        return new MessageEmbed()
+            .setColor(0xff7b51)
+            .setAuthor("咔咔島國", g?.iconURL() ?? undefined);
+    }
+
+    public getCheckerEmbed() {
+        const {
+            minD: mind, hour: hr, day, month
+        } = this.getDateTimeDetails();
+        
+        var embed = this.getEmbedBase();
+        embed.title = "潛水檢查";
+        embed.description = "請在這條訊息下方按下按鈕，以通過潛水檢查，否則居民身分組將會被移除；\n原先即無居民身分組者會被踢除！";
+        embed.addField("截止日期", `${month}月${day}日 ${hr}:${mind}`);
+        return embed;
+    }
+
+    public getAnnounceEmbed() {
+        const {
+            minD: mind, hour: hr, day, month
+        } = this.getDateTimeDetails();
+                    
+        var embed = this.getEmbedBase();
+        embed.title = "清除潛水者公告";
+        embed.description = "沒有在 <#769009862323208224> 點選按鈕的成員，居民身分組將會被移除；\n原先即無居民身分組者會被踢除！";
+        embed.addField("可排除潛水檢查的身分組", this.config.getIgnoredRoles().map(r => `<@&${r}>`).join("\n"));
+        embed.addField("截止日期", `${month}月${day}日 ${hr}:${mind}`);
+        return embed;
     }
 
     public updateActivity() {
@@ -494,8 +569,8 @@ export class Akabot {
 
             // Update slash commands
             // @ts-ignore
-            var app = this.bot.api.applications(this.config.data.appId).guilds(g?.id);
-            await app.commands.post({
+            var api = this.bot.api.applications(this.config.data.appId).guilds(g?.id).commands;
+            await api.post({
                 data: {
                     name: "kab",
                     description: "Schedule an event to clean up inactive members.",
@@ -525,6 +600,18 @@ export class Akabot {
                             required: false
                         }
                     ]
+                }
+            });
+            await api.post({
+                data: {
+                    name: "cancel",
+                    description: "Cancel the scheduled event."
+                }
+            });
+            await api.post({
+                data: {
+                    name: "update",
+                    description: "Update the ongoing anonunce embed message."
                 }
             });
             this.logger.info("Slash commands has been setup!");
@@ -663,7 +750,7 @@ export class Akabot {
                                         .addField("成員", `${sender.mention}\n${sender.id}`, true)
                                         .setTimestamp(new Date());
                                     e2.author = sender.authorTagged();
-                                    c.send({ embed: e2 });
+                                    this.provider.sendToChannel(c, { embed: e2 });
                                 }
                             });
                         }
@@ -673,7 +760,10 @@ export class Akabot {
                 const name = interaction.data.name;
                 const args = interaction.data.options?.map((o: any) => o.value.toString()).join(" ") ?? "";
                 const cmd = (name + " " + args).trim();
-                this.commandQueue.push(this.dispatcher.parse(cmd, new DiscordSlashSource(this.bot, interaction)));
+
+                const source = new DiscordSlashSource(this.bot, interaction);
+                await source.init();
+                this.commandQueue.push(this.dispatcher.parse(cmd, source));
                 
                 // @ts-ignore
                 const api: any = this.bot.api;
@@ -682,7 +772,7 @@ export class Akabot {
                         type: 4,
                         data: {
                             flags: 64,
-                            content: "ok"
+                            content: "Queued your command!"
                         }
                     }
                 });
@@ -701,6 +791,20 @@ export class Akabot {
                     this.logger.warn("Exception occurred: " + ex.message);
                 }
             }
+        }
+        if(msg.channel instanceof DMChannel) return;
+        if(msg.member?.roles.cache.map(r => r.id).indexOf(this.config.getForceKickRole()) == -1) return;
+        if(this.config.getValidChannels().indexOf(msg.channel.id) == -1) {
+            this.logger.info("Force kick pending member " + msg.author.tag
+                + " is sending messages to ignored channel " + msg.channel.name + " (#" + msg.channel.id + ")");
+            return;
+        }
+
+        if(this.config.getLockedForceKickMembers().indexOf(msg.author.id) == -1) {
+            this.provider.removeRole(msg.member!!, this.config.getForceKickRole());
+            this.logger.info("Removed force kick role from " + msg.author.tag);
+        } else {
+            this.logger.info("Cannot remove force kick role from " + msg.author.tag + " because it is locked.");
         }
     }
 
